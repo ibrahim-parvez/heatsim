@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# numba cache
+*.nbi
+*.nbc
+
+# generated output - commit the plots you want in the README by hand
+results/*
+!results/.gitkeep
+!results/plots/
+results/plots/*
+!results/plots/*.png

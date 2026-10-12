@@ -1,0 +1,8 @@
+# slimmer set for the docker image (linux, no metal, no mpi)
+numpy>=2.0
+numba>=0.61
+matplotlib>=3.8
+fastapi>=0.115
+uvicorn[standard]>=0.30
+prometheus-client>=0.20
+pydantic>=2.6

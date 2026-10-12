@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heatsim"
+version = "0.1.0"
+description = "2D heat diffusion on CPU, Apple GPU (Metal) and MPI, plus a small job service"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.0", "numba>=0.61", "matplotlib>=3.8"]
+
+[project.optional-dependencies]
+metal = ["mlx>=0.25"]
+mpi = ["mpich>=4.2", "mpi4py>=4.0"]
+service = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "prometheus-client>=0.20", "pydantic>=2.6"]
+
+[tool.setuptools.packages.find]
+include = ["heatsim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120

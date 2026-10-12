@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # the API running inside docker compose (numba backend)
+  - job_name: heatsim-docker
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["api:8000"]
+
+  # the API running natively on the mac (metal backend), started with `make serve`.
+  # if it isn't running this target just shows as down, which is fine
+  - job_name: heatsim-native
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["host.docker.internal:8001"]
