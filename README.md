@@ -11,6 +11,13 @@ Everything runs locally on an M4 Pro MacBook (14 CPU cores: 10 performance + 4 e
   <img src="docs/edge.png" width="400" alt="steady state with the top edge held hot">
 </p>
 
+## Results at a glance
+
+- **25× faster than NumPy** with a hand-written Metal kernel on a 4096² grid
+- **209 GB/s effective memory bandwidth** at 4096² (76% of the M4 Pro's 273 GB/s peak), peaking at 235 GB/s (86%) at 1024²
+- **94% parallel efficiency on 6 MPI ranks** (5.6× speedup), with 2D domain decomposition and halo exchange
+- A job API with Prometheus metrics and a Grafana dashboard, all running in Docker Compose
+
 ## The math
 
 $$\frac{\partial u}{\partial t} = \alpha \left(\frac{\partial^2 u}{\partial x^2} + \frac{\partial^2 u}{\partial y^2}\right)$$
@@ -67,25 +74,28 @@ make plots          # results/plots/*.png
 
 Effective bandwidth counts 8 bytes per cell per step (one float read, one float written). That's the minimum possible traffic, so it's a lower bound and the standard way to report stencil performance.
 
-**Results (M4 Pro):** _fill in after running `make bench`_
+**Results (M4 Pro):**
 
-| backend | 1024² ms/step | 4096² ms/step | 4096² GB/s | % of 273 GB/s | speedup vs NumPy |
+| backend | 1024² ms/step | 4096² ms/step | 4096² GB/s | % of 273 GB/s | speedup vs NumPy (4096²) |
 |---|---|---|---|---|---|
-| numpy | | | | | 1× |
-| numba | | | | | |
-| mlx | | | | | |
-| metal-naive | | | | | |
-| metal-tiled | | | | | |
+| numpy | 0.901 | 16.41 | 8 | 3% | 1× |
+| numba | 0.135 | 0.95 | 141 | 52% | 17.2× |
+| mlx | 0.105 | 2.07 | 65 | 24% | 7.9× |
+| metal-naive | 0.036 | 0.64 | 209 | 76% | **25.5×** |
+| metal-tiled | 0.048 | 0.65 | 207 | 76% | 25.3× |
+
+The best number overall was metal-naive at 1024²: 235 GB/s, which is 86% of peak.
 
 ![speedup](results/plots/speedup.png)
 ![bandwidth](results/plots/bandwidth.png)
 
 Things I noticed:
 
-- Small grids (256²) are dominated by overhead. Numba's thread startup is slower than single-threaded NumPy there, and the GPU kernels are limited by launch latency, not memory.
-- `mlx` (high-level ops) sits well below the hand-written kernels. Even with `mx.compile`, the slicing and concatenating to rebuild the boundary costs extra passes over memory.
-- Tiling on Apple GPUs helps less than it does on NVIDIA. The GPU cache already catches most of the neighbour reuse, so naive and tiled end up close at large sizes. Tiling is still worth having, but the gap depends heavily on grid size and threadgroup shape (see `make bench-tiles`).
-- At 4096² and up, the working set (2 × 64 MB) is bigger than the on-chip caches, so this is where the bandwidth number really means DRAM bandwidth.
+- **Tiling didn't beat the naive kernel.** At 1024² the tiled kernel is actually about 35% slower (0.048 vs 0.036 ms/step), and from 2048² up the two are within 2% of each other. Apple GPUs have a large cache that already catches the neighbour reuse tiling is meant to provide, so the tile load and the barrier are pure overhead. On NVIDIA hardware, where the CUDA version of this trick comes from, the result would be different.
+- **The GPU kernels plateau around 200–210 GB/s** once the grid stops fitting in cache (2048² and up). That's about 75% of the advertised peak, which is a typical ceiling for a streaming kernel.
+- **Numba gets surprisingly close at the largest size.** At 8192² the CPU version reaches 166 GB/s, against about 203 GB/s for the GPU kernels, so the GPU is only 1.2× faster there. CPU and GPU share the same unified memory, so for a memory-bound problem the GPU's advantage shrinks to however much more bandwidth it can pull than the CPU cores.
+- **Small grids are all overhead.** At 256², multithreaded Numba is slower than single-threaded NumPy (0.091 vs 0.062 ms/step) because starting the threads costs more than the work itself.
+- **`mlx` (high-level ops) plateaus at about 65 GB/s.** Even with `mx.compile`, slicing the interior and concatenating the boundary back on means extra passes over memory that the hand-written kernel doesn't do.
 
 ## Phase 2: MPI domain decomposition
 
@@ -105,25 +115,30 @@ Each rank is pinned to one thread (`NUMBA_NUM_THREADS=1`), so ranks equal cores.
 - **Strong scaling:** fixed 4096² grid, more ranks.
 - **Weak scaling:** 2048² cells per rank, so the global grid grows like `2048·√p`.
 
-**Results:** _fill in after running `make scaling`_
+**Results** (4096² grid for strong scaling, 2048² cells per rank for weak):
 
-| ranks | strong speedup | strong efficiency | weak efficiency | halo % |
-|---|---|---|---|---|
-| 1 | 1.0 | 100% | 100% | |
-| 2 | | | | |
-| 4 | | | | |
-| 8 | | | | |
-| 10 | | | | |
-| 14 | | | | |
+| ranks | process grid | strong speedup | strong efficiency | weak efficiency | halo % (strong) |
+|---|---|---|---|---|---|
+| 1 | 1×1 | 1.00× | 100% | 100% | 0% |
+| 2 | 2×1 | 1.95× | 98% | 86% | 2% |
+| 4 | 2×2 | 3.34× | 83% | 85% | 16% |
+| 6 | 3×2 | **5.63×** | **94%** | 57% | 6% |
+| 8 | 4×2 | 4.43× | 55% | 56% | 42% |
+| 10 | 5×2 | 4.50× | 45% | 54% | 52% |
+| 12 | 4×3 | 6.14× | 51% | 43% | 44% |
+| 14 | 7×2 | 6.18× | 44% | 44% | 42% |
 
 ![strong](results/plots/strong_scaling.png)
 ![weak](results/plots/weak_scaling.png)
+![halo](results/plots/halo_fraction.png)
 
-Things to keep in mind when reading these numbers:
+What the numbers say:
 
-- This is shared-memory MPI on one chip. All ranks compete for the same 273 GB/s, and since the stencil is memory-bound, efficiency drops once a few cores are enough to saturate bandwidth. That isn't the communication cost; the halo % chart shows how much time actually goes to communication.
-- Past 10 ranks you're on the efficiency cores, which are a lot slower, and the slowest rank sets the pace for everyone.
-- On a real cluster, each node brings its own memory bandwidth, so weak scaling across nodes should look much better than this. The code doesn't change, only the `mpirun` line.
+- **Scaling is close to ideal up to 6 ranks** (94% strong efficiency), then flattens out. Going from 6 to 14 ranks barely helps: 5.6× → 6.2×.
+- **The wall is memory bandwidth, not communication.** Each rank streams through about 1260 MLUPS × 8 bytes ≈ 10 GB/s, and the CPU cores together top out somewhere around 150 GB/s (see Numba in Phase 1). Six or so ranks already use a big share of that, so adding more cores just splits the same bandwidth more ways. The weak scaling drop after 4 ranks is the same effect.
+- **"Halo %" is mostly waiting, not sending.** It's the time spent inside `Sendrecv`, which includes waiting for a slower neighbour to arrive. The messages are tiny (one 4096-float row is 16 KB), so the jump to 40–50% beyond 6 ranks is load imbalance: ranks slowed down by bandwidth contention, or put on an efficiency core by macOS (which doesn't let you pin processes to cores), hold everyone else up at the next exchange.
+- **These are single runs, so there's noise.** The 4-rank result looks worse than 6, which is almost certainly scheduling jitter. Rerunning `make scaling` a few times and taking the best would smooth it out.
+- **On a real cluster** each node brings its own memory bandwidth, so scaling across nodes should hold up much better than scaling across cores on one chip. The code doesn't change, only the `mpirun` line.
 
 ## Phase 3: job service + monitoring
 
